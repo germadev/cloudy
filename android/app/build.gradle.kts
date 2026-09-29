@@ -19,7 +19,9 @@ val keystoreProperties = Properties().apply {
 
 android {
     namespace = "es.germade.cloudy"
-    compileSdk = flutter.compileSdkVersion
+    // permission_handler_android exige compilar contra la API 37 o superior.
+    // Solo afecta a las APIs disponibles al compilar, no a targetSdk ni minSdk.
+    compileSdk = maxOf(flutter.compileSdkVersion, 37)
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

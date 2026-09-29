@@ -156,6 +156,54 @@ flutter analyze
 flutter test
 ```
 
+## Integración continua y releases
+
+- **`.github/workflows/build.yml`**: en cada pull request y en cada push a
+  `main` instala las dependencias, ejecuta el análisis estático y los tests y,
+  si pasan, compila el APK de Android y el IPA de iOS, que quedan como
+  artefactos de la ejecución.
+- **`.github/workflows/release.yml`**: al subir una etiqueta `v*` ejecuta
+  `build.yml` y publica una release de GitHub con el APK y el IPA adjuntos.
+  Las etiquetas con guion (`v1.2.0-beta.1`) se publican como *pre-release*.
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+La versión de la app se toma de la etiqueta (sin la `v`); el número de build
+es el número de ejecución del workflow.
+
+### Secretos del repositorio (todos opcionales)
+
+| Secreto | Uso |
+|---|---|
+| `GOOGLE_SERVER_CLIENT_ID` | ID de cliente web de OAuth, necesario para iniciar sesión en Android |
+| `GOOGLE_IOS_CLIENT_ID` | ID de cliente de iOS; se añade al `Info.plist` junto con su esquema de URL |
+| `ANDROID_KEYSTORE_BASE64` | Keystore de firma en base64 |
+| `ANDROID_KEYSTORE_PASSWORD` | Contraseña del keystore |
+| `ANDROID_KEY_ALIAS` | Alias de la clave |
+| `ANDROID_KEY_PASSWORD` | Contraseña de la clave |
+
+Sin keystore, el APK se firma con una clave de depuración distinta en cada
+ejecución: se puede instalar, pero no actualizar una versión anterior, y Google
+Sign-In solo funcionará si esa huella está registrada. Para crear un keystore
+estable y registrar su SHA-1 en Google Cloud:
+
+```bash
+keytool -genkey -v -keystore upload-keystore.jks -keyalg RSA -keysize 2048 \
+  -validity 10000 -alias upload
+keytool -list -v -keystore upload-keystore.jks -alias upload   # huella SHA-1
+base64 -w0 upload-keystore.jks                                  # valor del secreto
+```
+
+En local, la misma firma se usa creando `android/key.properties` (excluido de
+git) con `storeFile`, `storePassword`, `keyAlias` y `keyPassword`.
+
+El **IPA se genera sin firmar**, porque firmarlo requiere un certificado y un
+perfil de aprovisionamiento de Apple. Para instalarlo hay que volver a firmarlo
+(por ejemplo con AltStore o Sideloadly) o distribuirlo por TestFlight.
+
 Las pruebas cubren el planificador (todas las combinaciones de cambios y
 modos), el motor completo contra un Drive simulado en memoria y carpetas
 temporales reales, los filtros, la persistencia, el bloqueo entre procesos y

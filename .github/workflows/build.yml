@@ -1,0 +1,201 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: Versión de la app (p. ej. v1.2.3). Si se omite, la de pubspec.yaml.
+        type: string
+        required: false
+        default: ''
+    secrets:
+      GOOGLE_SERVER_CLIENT_ID:
+        required: false
+      GOOGLE_IOS_CLIENT_ID:
+        required: false
+      ANDROID_KEYSTORE_BASE64:
+        required: false
+      ANDROID_KEYSTORE_PASSWORD:
+        required: false
+      ANDROID_KEY_ALIAS:
+        required: false
+      ANDROID_KEY_PASSWORD:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  FLUTTER_VERSION: 3.47.5
+
+jobs:
+  test:
+    name: Análisis y tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Instalar dependencias
+        run: flutter pub get
+
+      - name: Análisis estático
+        run: flutter analyze
+
+      - name: Tests
+        run: flutter test
+
+  android:
+    name: APK de Android
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Instalar dependencias
+        run: flutter pub get
+
+      - name: Calcular versión
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION#v}"
+          if [ -z "$version" ]; then
+            version="$(sed -nE 's/^version:[[:space:]]*([^+[:space:]]+).*/\1/p' pubspec.yaml)"
+          fi
+          echo "name=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Configurar la firma
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::warning::No hay keystore configurado: el APK se firma con una clave de depuración temporal."
+            exit 0
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
+          cat > android/key.properties <<EOF
+          storeFile=upload-keystore.jks
+          storePassword=$ANDROID_KEYSTORE_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          keyPassword=$ANDROID_KEY_PASSWORD
+          EOF
+
+      - name: Compilar APK
+        env:
+          GOOGLE_SERVER_CLIENT_ID: ${{ secrets.GOOGLE_SERVER_CLIENT_ID }}
+          BUILD_NAME: ${{ steps.version.outputs.name }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          flutter build apk --release \
+            --build-name="$BUILD_NAME" \
+            --build-number="$BUILD_NUMBER" \
+            --dart-define=GOOGLE_SERVER_CLIENT_ID="$GOOGLE_SERVER_CLIENT_ID"
+          mkdir -p dist
+          mv build/app/outputs/flutter-apk/app-release.apk "dist/cloudy-$BUILD_NAME.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cloudy-android
+          path: dist/*.apk
+          if-no-files-found: error
+
+  ios:
+    name: IPA de iOS
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Instalar dependencias
+        run: flutter pub get
+
+      - name: Calcular versión
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION#v}"
+          if [ -z "$version" ]; then
+            version="$(sed -nE 's/^version:[[:space:]]*([^+[:space:]]+).*/\1/p' pubspec.yaml)"
+          fi
+          echo "name=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Configurar Google Sign-In
+        env:
+          GOOGLE_IOS_CLIENT_ID: ${{ secrets.GOOGLE_IOS_CLIENT_ID }}
+        run: |
+          if [ -z "$GOOGLE_IOS_CLIENT_ID" ]; then
+            echo "::warning::Sin GOOGLE_IOS_CLIENT_ID: el inicio de sesión con Google no funcionará en esta build de iOS."
+            exit 0
+          fi
+          plist=ios/Runner/Info.plist
+          scheme="com.googleusercontent.apps.${GOOGLE_IOS_CLIENT_ID%.apps.googleusercontent.com}"
+          if ! /usr/libexec/PlistBuddy -c "Print :GIDClientID" "$plist" >/dev/null 2>&1; then
+            /usr/libexec/PlistBuddy -c "Add :GIDClientID string $GOOGLE_IOS_CLIENT_ID" "$plist"
+          fi
+          if ! /usr/libexec/PlistBuddy -c "Print :CFBundleURLTypes" "$plist" >/dev/null 2>&1; then
+            /usr/libexec/PlistBuddy \
+              -c "Add :CFBundleURLTypes array" \
+              -c "Add :CFBundleURLTypes:0 dict" \
+              -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" \
+              -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string $scheme" \
+              "$plist"
+          fi
+
+      - name: Compilar IPA (sin firmar)
+        env:
+          GOOGLE_SERVER_CLIENT_ID: ${{ secrets.GOOGLE_SERVER_CLIENT_ID }}
+          BUILD_NAME: ${{ steps.version.outputs.name }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          flutter build ios --release --no-codesign \
+            --build-name="$BUILD_NAME" \
+            --build-number="$BUILD_NUMBER" \
+            --dart-define=GOOGLE_SERVER_CLIENT_ID="$GOOGLE_SERVER_CLIENT_ID"
+          mkdir -p dist/Payload
+          cp -R build/ios/iphoneos/Runner.app dist/Payload/
+          cd dist
+          zip -qry "cloudy-$BUILD_NAME.ipa" Payload
+          rm -rf Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cloudy-ios
+          path: dist/*.ipa
+          if-no-files-found: error

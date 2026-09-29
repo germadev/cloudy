@@ -162,17 +162,18 @@ flutter test
   `main` instala las dependencias, ejecuta el análisis estático y los tests y,
   si pasan, compila el APK de Android y el IPA de iOS, que quedan como
   artefactos de la ejecución.
-- **`.github/workflows/release.yml`**: al subir una etiqueta `v*` ejecuta
-  `build.yml` y publica una release de GitHub con el APK y el IPA adjuntos.
-  Las etiquetas con guion (`v1.2.0-beta.1`) se publican como *pre-release*.
+- **`.github/workflows/release.yml`**: se lanza a mano desde la pestaña
+  *Actions* (*Release → Run workflow*) eligiendo el tipo de versión:
+  `patch`, `minor` o `major`. Toma la última etiqueta `vX.Y.Z`, calcula la
+  siguiente versión (`v1.4.2` + `minor` → `v1.5.0`; la primera, sin etiquetas
+  previas, parte de `0.0.0`), ejecuta `build.yml` con esa versión y, si todo
+  compila, crea la etiqueta y una release de GitHub con el APK y el IPA
+  adjuntos y notas generadas automáticamente.
 
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-La versión de la app se toma de la etiqueta (sin la `v`); el número de build
-es el número de ejecución del workflow.
+La versión de la app en las releases sale de esa etiqueta; la de
+`pubspec.yaml` solo se usa en las builds de desarrollo. El número de build
+(`versionCode` en Android) es el número de ejecución del workflow, que
+siempre aumenta.
 
 ### Secretos del repositorio (todos opcionales)
 
